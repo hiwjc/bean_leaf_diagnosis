@@ -1,0 +1,101 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import transforms, datasets
+from transformers import ViTForImageClassification
+from tqdm import tqdm
+from PIL import Image
+import gradio as gr
+
+
+# setup
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Hyperparameters
+batch_size = 32
+num_epochs = 1
+learning_rate = 3e-5
+
+# Transform/ vit 모델은 224 사이즈를 기준으로 만든 모델이라 입력되는 것들 크기 조정.
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) # 정규화 평균 0.5 표편 0.5
+])
+
+# Training 
+def train_model():
+    train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+    model = ViTForImageClassification.from_pretrained('google/vit-base-patch16-224', ignore_mismatched_sizes=True)
+    model.classifier = nn.Linear(model.config.hidden_size, 10) # 마지막 출력 벡터 크기와 분류 구분 개수를 입력.
+    model = model.to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        for images, labels in progress_bar:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(pixel_values=images).logits
+            loss = criterion(outputs, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            avg_loss = total_loss / (progress_bar.n + 1)
+            progress_bar.set_postfix(loss=avg_loss)
+
+    torch.save(model.state_dict(), 'vit_cifar10_model.pth')
+    return model
+
+# Inference 
+def classify_image(model, image_path):
+    image = Image.open(image_path).convert('RGB') # 텐서 3개 층
+    image = transform(image).unsqueeze(0).to(device)
+
+    model.eval()
+    with torch.no_grad():
+        outputs = model(pixel_values=image).logits
+        predicted_label = torch.argmax(outputs, dim=1).item()
+
+    return predicted_label
+
+if __name__ == '__main__':
+    # Train the model
+    trained_model = train_model()
+
+    # 사용자 이미지 입력 분류
+    image_path = input("Please enter the path to the image file: ")
+    label = classify_image(trained_model, image_path)
+    print(f"Predicted label: {label}")
+
+
+
+# UI 구현
+def launch_gradio_ui(model):
+    def predict_fn(img):
+        label = classify_image(model, img)
+        return {str(i): float(1.0 if i == label else 0.0) for i in range(10)}
+
+    demo = gr.Interface(
+        fn=predict_fn,
+        inputs=gr.Image(type="pil", label="Upload CIFAR-10 Image"),
+        outputs=gr.Label(num_top_classes=1, label="Predicted Class"),
+        title="CIFAR-10 분류기",
+        description=" CIFAR-10 클래스 중 하나로 분류합니다."
+    )
+    demo.launch(share=True)
+
+if __name__ == '__main__':
+    # 1) 모델 학습 (이미 학습된 모델이 있다면 생략 가능)
+    trained_model = train_model()
+
+    # 2) Gradio UI 실행
+    launch_gradio_ui(trained_model)
