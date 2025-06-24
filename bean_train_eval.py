@@ -1,5 +1,5 @@
 
-### collate (manga batch)
+### collate (manage batch)
 import torch
 def collate_fn(batch):
   return {
